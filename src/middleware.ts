@@ -24,26 +24,33 @@ export default async function middleware(req: NextRequest) {
 
   // Lógica de extração de subdomínio
   let subdomain: string | null = null;
+  const rootDomain = process.env.NEXT_PUBLIC_ROOT_DOMAIN || 'voltics.com.br';
 
   if (isLocalhost) {
     // localhost:3000 -> null
     // admin.localhost:3000 -> admin
     const parts = hostname.split('.');
     if (parts.length > 1 && parts[0] !== 'localhost') {
-        subdomain = parts[0];
+      subdomain = parts[0];
     }
   } else {
-    // agency.com -> null
-    // admin.agency.com -> admin
-    // dash.agency.com -> dash
-    
-    // Assumindo que o domínio principal é sempre o final (agency.com)
-    // Se hostname for exatamente agency.com, subdomain é null
-    if (hostname === 'agency.com' || hostname === 'www.agency.com') {
+    // rootDomain -> null
+    // master.rootDomain -> master
+    // demo.rootDomain -> demo
+
+    // Se hostname for o domínio principal, subdomain é null
+    if (hostname === rootDomain || hostname === `www.${rootDomain}` || hostname.split('.').length <= 2) {
+      // hostname.split('.').length <= 2 treats 'domain.com' as root
+      if (hostname.split('.').length > 2 && hostname.startsWith('www.')) {
         subdomain = null;
-    } else {
-        // Pega a primeira parte antes do primeiro ponto
+      } else if (hostname.split('.').length <= 2) {
+        subdomain = null;
+      } else {
         subdomain = hostname.split('.')[0];
+      }
+    } else {
+      // Pega a primeira parte antes do primeiro ponto
+      subdomain = hostname.split('.')[0];
     }
   }
 
@@ -51,31 +58,29 @@ export default async function middleware(req: NextRequest) {
 
   // Permitir acesso à documentação globalmente (antes de qualquer reescrita)
   if (url.pathname.startsWith('/docs')) {
-      return NextResponse.next();
+    return NextResponse.next();
   }
 
   // Permitir acesso a formulários públicos globalmente
   if (url.pathname.startsWith('/f/')) {
-      return NextResponse.next();
+    return NextResponse.next();
   }
 
   // 1. Reescrever rotas baseadas no subdomínio
-  
+
   // Admin Master
-  if (subdomain === 'admin') {
+  if (subdomain === 'admin' || subdomain === 'master') {
     // Se for /login, mantém (ou redireciona para /auth/login se quiser centralizar)
     // Se for /, reescreve para /master
     // Se for /users, reescreve para /master/users
-    
+
     if (url.pathname.startsWith('/auth')) {
-       // Deixa passar ou reescreve? 
-       // Vamos assumir que /auth é global
-       return NextResponse.next();
+      return NextResponse.next();
     }
-    
+
     // Evitar duplo prefixo: se já começa com /master, não adiciona de novo
     if (url.pathname.startsWith('/master')) {
-        return NextResponse.rewrite(new URL(url.pathname, req.url));
+      return NextResponse.rewrite(new URL(url.pathname, req.url));
     }
 
     // Reescrever para a pasta /master
@@ -83,24 +88,21 @@ export default async function middleware(req: NextRequest) {
   }
 
   // Cliente (Dash ou Personalizado)
-  if (subdomain && subdomain !== 'www' && subdomain !== 'admin') {
-    // Qualquer outro subdomínio é considerado um cliente
-    
+  if (subdomain && subdomain !== 'www' && subdomain !== 'admin' && subdomain !== 'master') {
+    // Qualquer outro subdomínio é considerado um cliente (como "demo")
+
     if (url.pathname.startsWith('/auth')) {
-       return NextResponse.next();
+      return NextResponse.next();
     }
 
     // Evitar duplo prefixo: se já começa com /client, não adiciona de novo
     if (url.pathname.startsWith('/client')) {
-        const response = NextResponse.rewrite(new URL(url.pathname, req.url));
-        response.headers.set('x-client-slug', subdomain);
-        return response;
+      const response = NextResponse.rewrite(new URL(url.pathname, req.url));
+      response.headers.set('x-client-slug', subdomain);
+      return response;
     }
 
     // Reescrever para a pasta /client
-    // Podemos passar o subdomain como query param ou header se necessário
-    // Mas aqui vamos apenas apontar para a estrutura de pastas /client
-    // Opcional: Injetar o slug do cliente nos headers
     const response = NextResponse.rewrite(new URL(`/client${url.pathname}`, req.url));
     response.headers.set('x-client-slug', subdomain);
     return response;
