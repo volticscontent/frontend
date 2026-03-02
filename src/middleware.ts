@@ -16,109 +16,81 @@ export const config = {
 
 export default async function middleware(req: NextRequest) {
   const url = req.nextUrl;
-  const hostname = req.headers.get('host')!;
+  let hostname = req.headers.get('host')!;
 
-  // Defina seu domínio base aqui (localhost para dev, agency.com para prod)
-  // const allowedDomains = ['localhost:3000', 'agency.com'];
-  const isLocalhost = hostname.includes('localhost');
+  // 1. Definição do Domínio Raiz
+  // Se a env não estiver definida, usa cycleapp.shop como fallback seguro
+  const rootDomain = process.env.NEXT_PUBLIC_ROOT_DOMAIN || 'cycleapp.shop';
 
-  // Lógica de extração de subdomínio
-  let subdomain: string | null = null;
-  const rootDomain = process.env.NEXT_PUBLIC_ROOT_DOMAIN || 'voltics.com.br';
-
-  if (isLocalhost) {
-    // localhost:3000 -> null
-    // admin.localhost:3000 -> admin
-    const parts = hostname.split('.');
-    if (parts.length > 1 && parts[0] !== 'localhost') {
-      subdomain = parts[0];
-    }
-  } else {
-    // rootDomain -> null
-    // master.rootDomain -> master
-    // demo.rootDomain -> demo
-
-    // Se hostname for o domínio principal, subdomain é null
-    if (hostname === rootDomain || hostname === `www.${rootDomain}` || hostname.split('.').length <= 2) {
-      // hostname.split('.').length <= 2 treats 'domain.com' as root
-      if (hostname.split('.').length > 2 && hostname.startsWith('www.')) {
-        subdomain = null;
-      } else if (hostname.split('.').length <= 2) {
-        subdomain = null;
-      } else {
-        subdomain = hostname.split('.')[0];
-      }
-    } else {
-      // Pega a primeira parte antes do primeiro ponto
-      subdomain = hostname.split('.')[0];
-    }
+  // 2. Normalização do Hostname (para desenvolvimento local)
+  // master.localhost:3000 -> master.cycleapp.shop
+  // client.localhost:3000 -> client.cycleapp.shop
+  if (hostname.includes('localhost')) {
+    hostname = hostname.replace('.localhost:3000', `.${rootDomain}`);
   }
 
-  console.log(`Middleware: Host=${hostname}, Subdomain=${subdomain}, Path=${url.pathname}`);
+  const searchParams = req.nextUrl.searchParams.toString();
+  const path = `${url.pathname}${
+    searchParams.length > 0 ? `?${searchParams}` : ""
+  }`;
 
-  // Permitir acesso à documentação globalmente (antes de qualquer reescrita)
-  if (url.pathname.startsWith('/docs')) {
+  console.log(`[Middleware] Host: ${hostname}, Path: ${path}`);
+
+  // 3. Rotas Públicas (sem reescrita)
+  // Permitir acesso à documentação e formulários públicos
+  if (url.pathname.startsWith('/docs') || url.pathname.startsWith('/f/')) {
     return NextResponse.next();
   }
 
-  // Permitir acesso a formulários públicos globalmente
-  if (url.pathname.startsWith('/f/')) {
-    return NextResponse.next();
-  }
+  // 4. Lógica de Roteamento por Subdomínio
 
-  // 1. Reescrever rotas baseadas no subdomínio
-
-  // Admin Master
-  if (subdomain === 'admin' || subdomain === 'master') {
-    // Se for /login, mantém (ou redireciona para /auth/login se quiser centralizar)
-    // Se for /, reescreve para /master
-    // Se for /users, reescreve para /master/users
-
-    if (url.pathname.startsWith('/auth')) {
-      return NextResponse.next();
-    }
-
-    // Evitar duplo prefixo: se já começa com /master, não adiciona de novo
+  // --- Cenário A: Painel Master/Admin (master.cycleapp.shop) ---
+  if (hostname === `master.${rootDomain}`) {
+    // Se a rota já começa com /master, mantém (evita loop)
     if (url.pathname.startsWith('/master')) {
-      return NextResponse.rewrite(new URL(url.pathname, req.url));
+       return NextResponse.rewrite(new URL(path, req.url));
     }
-
-    // Reescrever para a pasta /master
-    return NextResponse.rewrite(new URL(`/master${url.pathname}`, req.url));
+    // Reescreve para a pasta /app/master
+    return NextResponse.rewrite(
+      new URL(`/master${path === "/" ? "" : path}`, req.url)
+    );
   }
 
-  // Cliente (Dash ou Personalizado)
-  if (subdomain && subdomain !== 'www' && subdomain !== 'admin' && subdomain !== 'master') {
-    // Qualquer outro subdomínio é considerado um cliente (como "demo")
+  // --- Cenário B: Landing Page / Home (cycleapp.shop ou www) ---
+  if (hostname === rootDomain || hostname === `www.${rootDomain}`) {
+    // Reescreve para a pasta /app/home
+    return NextResponse.rewrite(new URL(`/home${path}`, req.url));
+  }
 
-    if (url.pathname.startsWith('/auth')) {
-      return NextResponse.next();
-    }
+  // --- Cenário C: App do Cliente (Subdomínio ou Domínio Personalizado) ---
+  // Qualquer outro host que não seja master, www ou raiz cai aqui.
+  
+  // Lógica para extrair o "slug" do cliente para passar no header (opcional, mas útil)
+  const currentHost = hostname;
+  let clientSlug = '';
 
-    // Evitar duplo prefixo: se já começa com /client, não adiciona de novo
-    if (url.pathname.startsWith('/client')) {
-      const response = NextResponse.rewrite(new URL(url.pathname, req.url));
-      response.headers.set('x-client-slug', subdomain);
+  if (currentHost.endsWith(`.${rootDomain}`)) {
+      // É um subdomínio (ex: loja1.cycleapp.shop)
+      clientSlug = currentHost.replace(`.${rootDomain}`, '');
+  } else {
+      // É um domínio personalizado (ex: minhaloja.com)
+      clientSlug = currentHost; // O slug é o próprio domínio, ou o backend resolve depois
+  }
+
+  console.log(`[Middleware] Client Route detected. Slug/Domain: ${clientSlug}`);
+
+  // Se a rota já começa com /client, mantém
+  if (url.pathname.startsWith('/client')) {
+      const response = NextResponse.rewrite(new URL(path, req.url));
+      response.headers.set('x-client-slug', clientSlug);
       return response;
-    }
-
-    // Reescrever para a pasta /client
-    const response = NextResponse.rewrite(new URL(`/client${url.pathname}`, req.url));
-    response.headers.set('x-client-slug', subdomain);
-    return response;
   }
 
-  // Domínio Raiz (Landing Page ou Redirecionamento)
-  if (!subdomain || subdomain === 'www') {
-    // Permitir acesso direto a /master e /client em localhost para facilitar o desenvolvimento
-    if (isLocalhost && (url.pathname.startsWith('/master') || url.pathname.startsWith('/client'))) {
-      return NextResponse.next();
-    }
-
-    // Pode ser uma Landing Page em /app/home
-    // ou redirecionar para login
-    return NextResponse.rewrite(new URL(`/home${url.pathname}`, req.url));
-  }
-
-  return NextResponse.next();
+  // Reescreve para a pasta /app/client
+  const response = NextResponse.rewrite(
+    new URL(`/client${path === "/" ? "" : path}`, req.url)
+  );
+  response.headers.set('x-client-slug', clientSlug);
+  
+  return response;
 }
